@@ -1,35 +1,38 @@
 import { useState } from "react";
 import { api } from "../api.js";
 import Icon from "./Icon.jsx";
+import ConfirmModal from "./ConfirmModal.jsx";
 
 export default function ImportsPanel({ imports, refresh, addToast }) {
   const [busyId, setBusyId] = useState(null);
+  const [confirm, setConfirm] = useState(null);
 
-  const teardown = async (id) => {
-    if (!confirm("Tear down this import? Its containers and networks will be removed.")) return;
-    setBusyId(id);
+  const doTeardown = async (item) => {
+    setBusyId(item.id);
     try {
-      await api.teardownImport(id);
-      addToast("Import torn down", "ok");
+      const r = await api.teardownImport(item.id);
+      const errs = (r.errors || []).join("; ");
+      addToast(errs ? `Torn down with errors: ${errs}` : "Import torn down", errs ? "err" : "ok");
       await refresh();
     } catch (e) {
       addToast(e.message, "err");
     } finally {
       setBusyId(null);
+      setConfirm(null);
     }
   };
 
-  const forget = async (id) => {
-    if (!confirm("Remove this import record? Live resources will not be touched.")) return;
-    setBusyId(id);
+  const doForget = async (item) => {
+    setBusyId(item.id);
     try {
-      await api.forgetImport(id);
+      await api.forgetImport(item.id);
       await refresh();
       addToast("Import record removed", "ok");
     } catch (e) {
       addToast(e.message, "err");
     } finally {
       setBusyId(null);
+      setConfirm(null);
     }
   };
 
@@ -58,13 +61,17 @@ export default function ImportsPanel({ imports, refresh, addToast }) {
                 </div>
                 <div className="stack-item__actions">
                   <button
-                    onClick={() => teardown(item.id)}
+                    onClick={() => setConfirm({ kind: "teardown", item })}
                     disabled={isBusy}
                     title={`Tear down ${total} resource${total === 1 ? "" : "s"}`}
                   >
                     <Icon name="stop" size={14} />
                   </button>
-                  <button onClick={() => forget(item.id)} disabled={isBusy} title="Forget this record">
+                  <button
+                    onClick={() => setConfirm({ kind: "forget", item })}
+                    disabled={isBusy}
+                    title="Forget this record"
+                  >
                     <Icon name="trash" size={14} />
                   </button>
                 </div>
@@ -73,6 +80,25 @@ export default function ImportsPanel({ imports, refresh, addToast }) {
           })}
         </div>
       )}
+      <ConfirmModal
+        open={!!confirm}
+        title={confirm?.kind === "teardown" ? "Tear down import?" : "Forget import record?"}
+        message={
+          confirm?.kind === "teardown" ? (
+            <p>
+              <strong>{confirm.item.name}</strong> will have all
+              {" "}{confirm.item.containers.length} container{confirm.item.containers.length === 1 ? "" : "s"} and{" "}
+              {confirm.item.networks.length} network{confirm.item.networks.length === 1 ? "" : "s"} removed.
+            </p>
+          ) : confirm ? (
+            <p>Remove the record for <strong>{confirm.item.name}</strong>? Live resources will not be touched.</p>
+          ) : null
+        }
+        confirmLabel={confirm?.kind === "teardown" ? "Tear down" : "Forget"}
+        danger
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => (confirm?.kind === "teardown" ? doTeardown(confirm.item) : doForget(confirm.item))}
+      />
     </section>
   );
 }

@@ -1,7 +1,12 @@
 """WebSocket live-event hub.
 
-A background task broadcasts a full snapshot of containers + networks every few
-seconds. Mutations also trigger an immediate broadcast when possible.
+A background task broadcasts a full snapshot of containers + networks every
+few seconds. Mutations also trigger an immediate broadcast when possible.
+
+The event loop and connection manager are reset whenever ``set_loop`` is
+called with a loop that isn't the current one — this makes the hub safe
+under uvicorn's ``--reload`` worker, where the previous loop object
+becomes invalid.
 """
 import asyncio
 import json
@@ -9,7 +14,7 @@ from typing import Set
 
 from . import docker_client
 
-_manager: "ConnectionManager | None" = None
+_manager = None
 _loop = None
 
 
@@ -57,17 +62,22 @@ async def snapshot_loop(interval: float = 3.0):
 
 def broadcast_change():
     """Best-effort immediate push after a mutation (call from sync routes)."""
-    global _loop
-    if _loop is None:
+    loop = _loop
+    if loop is None or loop.is_closed():
         return
     try:
         data = docker_client.snapshot()
         msg = json.dumps({"type": "snapshot", "data": data})
-        asyncio.run_coroutine_threadsafe(get_manager().broadcast(msg), _loop)
+        asyncio.run_coroutine_threadsafe(get_manager().broadcast(msg), loop)
     except Exception:
         pass
 
 
 def set_loop(loop):
-    global _loop
+    """Bind the hub to ``loop``. If the loop changed, drop the old manager
+    (its WebSockets are dead anyway)."""
+    global _loop, _manager
+    if _loop is loop:
+        return
     _loop = loop
+    _manager = None  # force a fresh manager on next get_manager()

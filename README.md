@@ -61,6 +61,28 @@
 - A separate **Compose imports** panel in the sidebar lists past imports
   with per-row teardown / forget buttons
 
+### Images & volumes
+- **Images** panel — list local images with sizes, remove unused, prune
+  dangling, see which are in use by a container.
+- **Volumes** panel — list named volumes, remove, prune dangling.
+
+### Container details
+- **Overview** — image, ports, command, attached networks, lifecycle buttons
+- **Logs** — live SSE stream with line counter and auto-scroll
+- **Metrics** — current CPU/memory + a 60-point sparkline so you can see
+  the trend (polling pauses when the tab is hidden)
+- **Config** — environment variables, volume mounts, labels
+- **Shell** — interactive `docker exec` PTY; type a command, hit
+  <kbd>Enter</kbd>, see output stream back
+- **Recreate** — stop + remove + recreate with the current spec (handy
+  when you tweak a label or env var and want to re-apply)
+
+### Stacks
+- Snapshot the current live objects as a named stack (SQLite-backed)
+- **Apply** / **Teardown** / **Delete** saved stacks
+- Useful for "save what I have right now" workflows that aren't tied to
+  a compose file
+
 ### Stacks
 - Snapshot the current live objects as a named stack (SQLite-backed)
 - **Apply** / **Teardown** / **Delete** saved stacks
@@ -68,10 +90,20 @@
   a compose file
 
 ### Quality-of-life
-- Light / dark theme (auto-detected, persisted)
-- Toasts for success / error feedback
-- Real-time UI updates via WebSocket (auto-reconnects)
+- Light / dark theme (auto-detected, persisted, switchable from Settings)
+- Toasts for success / error feedback (with manual dismiss and a 5-visible cap)
+- Real-time UI updates via WebSocket with exponential-backoff reconnect
 - WebSocket failures don't break the app — manual refresh always works
+- **Keyboard shortcuts** — <kbd>Ctrl</kbd>+<kbd>I</kbd> import, <kbd>Ctrl</kbd>+<kbd>E</kbd> export,
+  <kbd>Ctrl</kbd>+<kbd>K</kbd> settings, <kbd>/</kbd> focus search, <kbd>?</kbd> help
+- **Network detail popover** — click a network node to see driver and attached containers
+- **In-flight import badge** — the nav-rail Resources icon shows a count
+  when imports are running
+- **Optimistic connect/disconnect** — drag-drop is instant; rolls back on error
+- **Pydantic-validated inputs** — names, CPU, memory, image refs all
+  checked server-side so the user gets a real error instead of a Docker
+  daemon cryptic one
+- **SQLite-backed jobs** — in-flight imports survive a backend restart
 
 ---
 
@@ -83,8 +115,8 @@
 | ASGI server  | [Uvicorn](https://www.uvicorn.org)                |
 | Docker API   | [docker-py](https://docker-py.readthedocs.io) 7.1 |
 | Validation   | [Pydantic](https://docs.pydantic.dev) 2.13        |
-| Real-time    | WebSockets (`/events`) + SSE for image pulls      |
-| Persistence  | SQLite (built-in `sqlite3`) for stacks & imports  |
+| Real-time    | WebSockets (`/events`, `/containers/{id}/exec/{eid}/attach`) + SSE for image pulls and log streaming |
+| Persistence  | SQLite (built-in `sqlite3`, WAL mode) for stacks, imports, and jobs |
 | Frontend     | [React](https://react.dev) 18 + [Vite](https://vitejs.dev) 5 |
 | Canvas       | [React Flow](https://reactflow.dev) 11            |
 | Styling      | Hand-rolled CSS with CSS variables for theming   |
@@ -241,12 +273,13 @@ camptainer/
 |--------|-----------------------------------------|------------------------------------------|
 | POST   | `/containers`                           | create a container                       |
 | GET    | `/containers`                           | list Camptainer containers               |
+| GET    | `/containers/{id}`                      | full details (env, volumes, labels)     |
 | DELETE | `/containers/{id}`                      | remove a container                       |
 | POST   | `/containers/{id}/start`                | start a stopped container                |
 | POST   | `/containers/{id}/stop`                 | stop a running container                 |
 | POST   | `/containers/{id}/restart`              | restart a container                      |
 | POST   | `/containers/{id}/recreate`             | stop + remove + recreate with new spec   |
-| GET    | `/containers/{id}/logs?tail=300`        | fetch logs (text/plain)                  |
+| GET    | `/containers/{id}/logs?tail=300&follow=true` | one-shot tail or SSE stream          |
 | GET    | `/containers/{id}/stats`                | live CPU/memory stats                    |
 | POST   | `/containers/{id}/connect`              | join a network (drag-drop)               |
 | POST   | `/containers/{id}/disconnect`           | leave a network                          |
@@ -272,10 +305,22 @@ camptainer/
 | POST   | `/stacks/{id}/teardown`             | remove a stack's containers/networks     |
 | DELETE | `/stacks/{id}`                      | delete a saved stack record              |
 
+### Images, volumes, exec
+| Method | Endpoint                                          | Purpose                                          |
+|--------|---------------------------------------------------|--------------------------------------------------|
+| GET    | `/images`                                         | list local images with size + in-use flag        |
+| DELETE | `/images/{id}?force=true`                         | remove an image                                  |
+| POST   | `/images/prune`                                   | prune dangling images                            |
+| GET    | `/volumes`                                        | list named volumes                               |
+| DELETE | `/volumes/{name}?force=true`                      | remove a volume                                  |
+| POST   | `/volumes/prune`                                  | prune dangling volumes                           |
+| POST   | `/containers/{id}/exec`                           | create an interactive exec                       |
+| WS     | `/containers/{id}/exec/{exec_id}/attach`          | bidirectional stream (browser ↔ container PTY)   |
+
 ### Other
 | Method | Endpoint    | Purpose                                       |
 |--------|-------------|-----------------------------------------------|
-| GET    | `/health`   | liveness probe (`{"status": "ok"}`)           |
+| GET    | `/health`   | liveness + Docker daemon status               |
 | WS     | `/events`   | live snapshot feed (pushes full state every 3s) |
 
 ---

@@ -21,6 +21,8 @@ export default function ComposeImport({ onClose, addToast, onImported }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null); // {current, total, message}
+  const [result, setResult] = useState(null);     // last successful import result
+  const [errorMsg, setErrorMsg] = useState(null);
   const stopRef = useRef(false);
 
   // Let the worker finish in the background even if the dialog closes.
@@ -29,19 +31,23 @@ export default function ComposeImport({ onClose, addToast, onImported }) {
   const doImport = async () => {
     setBusy(true);
     setProgress({ current: 0, total: 0, message: "Queueing\u2026" });
+    setResult(null);
+    setErrorMsg(null);
     stopRef.current = false;
     try {
       const { job_id } = await api.importCompose(yaml, name.trim() || undefined);
-      const result = await pollJob(job_id, stopRef, setProgress);
-      const errors = result.errors ? result.errors.join("; ") : "";
-      if (errors) {
-        addToast(`Imported with errors: ${errors}`, "err");
+      const r = await pollJob(job_id, stopRef, setProgress);
+      const errors = r.errors || [];
+      setResult(r);
+      if (errors.length) {
+        setErrorMsg(errors.join("; "));
+        addToast(`Imported with errors: ${errors.join("; ")}`, "err");
       } else {
-        addToast(`Imported “${result.import_name || "stack"}”`, "ok");
+        addToast(`Imported "${r.import_name || "stack"}"`, "ok");
       }
       onImported?.();
-      if (!errors) onClose();
     } catch (error) {
+      setErrorMsg(error.message);
       addToast(error.message, "err");
     } finally {
       setBusy(false);
@@ -102,18 +108,50 @@ export default function ComposeImport({ onClose, addToast, onImported }) {
             </div>
           </div>
         )}
+
+        {result && (
+          <div className={`import-result ${errorMsg ? "is-error" : ""}`}>
+            <h3>
+              {errorMsg ? "Imported with errors" : "Imported"}
+              {result.import_name && <span className="import-result__name"> — {result.import_name}</span>}
+            </h3>
+            {result.containers?.length > 0 && (
+              <p>
+                <strong>Containers ({result.containers.length}):</strong>{" "}
+                {result.containers.map((c) => c.name).join(", ")}
+              </p>
+            )}
+            {result.networks?.length > 0 && (
+              <p>
+                <strong>Networks ({result.networks.length}):</strong>{" "}
+                {result.networks.map((n) => n.name).join(", ")}
+              </p>
+            )}
+            {errorMsg && <p className="import-result__err">{errorMsg}</p>}
+          </div>
+        )}
         <div className="compose-dialog__actions">
           <span className="dialog__hint">
             {busy
               ? "You can close this dialog; the import will keep running in the background."
+              : result
+              ? "Done. You can dismiss this dialog or import another file."
               : "Services and managed networks will be created locally."}
           </span>
           <div>
-            <button type="button" className="btn btn-ghost" onClick={handleClose}>{busy ? "Hide" : "Cancel"}</button>
-            <button className="btn btn-primary" onClick={doImport} disabled={busy || !yaml.trim()}>
-              <Icon name="upload" size={16} />
-              {busy ? "Importing\u2026" : "Import stack"}
-            </button>
+            <button type="button" className="btn btn-ghost" onClick={handleClose}>{busy ? "Hide" : "Close"}</button>
+            {!busy && !result && (
+              <button className="btn btn-primary" onClick={doImport} disabled={!yaml.trim()}>
+                <Icon name="upload" size={16} />
+                Import stack
+              </button>
+            )}
+            {!busy && result && (
+              <button className="btn btn-primary" onClick={() => { setResult(null); setErrorMsg(null); }}>
+                <Icon name="upload" size={16} />
+                Import another
+              </button>
+            )}
           </div>
         </div>
       </section>

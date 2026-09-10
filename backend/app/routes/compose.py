@@ -23,7 +23,9 @@ def get_compose():
     return PlainTextResponse(yaml_text, media_type="text/yaml")
 
 
-def _run_import_job(job_id: str, text: str, import_name: str | None) -> None:
+def _run_import_job(
+    job_id: str, text: str, import_name: str | None, auto_pull: bool
+) -> None:
     """Worker thread: parse + create networks/containers, persist result."""
     try:
         jobs.update_job(job_id, status="running", message="Importing\u2026")
@@ -33,7 +35,9 @@ def _run_import_job(job_id: str, text: str, import_name: str | None) -> None:
                 job_id, current=current, total=total, message=message
             )
 
-        outcome = docker_client.import_compose(text, on_progress=on_progress)
+        outcome = docker_client.import_compose(
+            text, on_progress=on_progress, auto_pull=auto_pull
+        )
 
         net_names = [n["name"] for n in outcome.get("networks", []) if n.get("name")]
         ct_names = [c["name"] for c in outcome.get("containers", []) if c.get("name")]
@@ -53,6 +57,7 @@ def _run_import_job(job_id: str, text: str, import_name: str | None) -> None:
             message="Imported",
             result=outcome,
         )
+        events.broadcast_change()
     except Exception as exc:
         jobs.update_job(job_id, status="failed", error=str(exc))
 
@@ -73,7 +78,7 @@ def import_compose(payload: ComposeImport):
     job_id = jobs.create_job("compose-import", total=total)
     threading.Thread(
         target=_run_import_job,
-        args=(job_id, text, payload.name),
+        args=(job_id, text, payload.name, False),
         daemon=True,
     ).start()
     return {"job_id": job_id, "status": "pending", "total": total}
@@ -87,10 +92,25 @@ def get_import_status(job_id: str):
     return job
 
 
+@router.get("/jobs/active")
+def active_jobs():
+    """In-flight imports (and the last few completed ones) for the UI badge."""
+    recents = jobs.list_recent_jobs(limit=20)
+    return [j for j in recents if j.get("status") in ("pending", "running")]
+
+
 @router.get("/imports")
 def list_imports():
     """List past compose imports that still own live resources."""
     return db.list_compose_imports(include_torn_down=False)
+
+
+@router.get("/imports/{import_id}")
+def get_import(import_id: int):
+    rec = db.get_compose_import(import_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="import not found")
+    return rec
 
 
 @router.post("/imports/{import_id}/teardown")
@@ -102,24 +122,27 @@ def teardown_import(import_id: int):
     if rec["torn_down"]:
         return {"ok": True, "already_torn_down": True}
     # Containers first so Docker doesn't complain about endpoints still attached.
+    errors: list[str] = []
     for name in rec.get("containers", []):
         try:
             docker_client.remove_container_by_name(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"container {name}: {exc}")
     for name in rec.get("networks", []):
         try:
             docker_client.remove_network(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"network {name}: {exc}")
     db.mark_compose_import_torn_down(import_id)
     events.broadcast_change()
-    return {"ok": True, "import_id": import_id}
+    return {"ok": True, "import_id": import_id, "errors": errors}
 
 
 @router.delete("/imports/{import_id}")
 def forget_import(import_id: int):
-    db.delete_compose_import(import_id)
+    deleted = db.delete_compose_import(import_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="import not found")
     return {"ok": True}
 
 
