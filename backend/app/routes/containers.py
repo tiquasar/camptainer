@@ -164,10 +164,18 @@ async def exec_attach(ws: WebSocket, container_id: str, exec_id: str):
     import threading
 
     await ws.accept()
-    cli = docker_client.get_client()
-    sock = cli.api.exec_start(
-        exec_id, detach=False, tty=True, stream=True, socket=True
-    )
+    try:
+        cli = docker_client.get_client()
+        sock = cli.api.exec_start(
+            exec_id, detach=False, tty=True, stream=True, socket=True
+        )
+    except Exception as exc:
+        try:
+            await ws.send_text(f"# error: {exc}\n")
+        except Exception:
+            pass
+        await ws.close()
+        return
     loop = asyncio.get_running_loop()
     done = threading.Event()
 
@@ -180,7 +188,7 @@ async def exec_attach(ws: WebSocket, container_id: str, exec_id: str):
     async def pump_out():
         try:
             while not done.is_set():
-                chunk = await loop.run_in_executor(None, lambda: sock._sock.recv(4096))
+                chunk = await loop.run_in_executor(None, lambda: sock.recv(4096))
                 if not chunk:
                     break
                 text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else chunk
@@ -211,7 +219,7 @@ async def exec_attach(ws: WebSocket, container_id: str, exec_id: str):
                     continue
                 await loop.run_in_executor(
                     None,
-                    lambda m=msg: sock._sock.sendall(m.encode("utf-8", errors="replace")),
+                    lambda m=msg: sock.sendall(m.encode("utf-8", errors="replace")),
                 )
         except WebSocketDisconnect:
             pass

@@ -4,12 +4,15 @@ Jobs are first written to memory (cheap, frequent reads) and mirrored to
 SQLite (so a backend restart doesn't lose them). Reads consult memory
 first and fall back to SQLite. The cap + sweep prevent unbounded growth.
 """
+import logging
 import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
 
 from . import db
+
+log = logging.getLogger("camptainer.jobs")
 
 _LOCK = threading.Lock()
 _JOBS: Dict[str, Dict[str, Any]] = {}
@@ -103,7 +106,7 @@ def update_job(
                     error=error,
                 )
             except Exception:
-                pass
+                log.exception("Failed to mirror job %s to SQLite", job_id)
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:

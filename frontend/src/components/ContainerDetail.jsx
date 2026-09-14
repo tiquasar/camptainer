@@ -139,6 +139,8 @@ export default function ContainerDetail({ container, onClose, onShell, onUpdated
         networks: container.networks || [],
         command: container.command ? (Array.isArray(container.command) ? container.command.join(" ") : container.command) : null,
         restart_policy: container.restart_policy || null,
+        cpu: container.cpu ?? null,
+        mem: container.mem ?? null,
         auto_pull: false,
       };
       await api.recreate(container.id, spec);

@@ -5,12 +5,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import events
-from .db import init_db
+from . import db, events
 from .docker_client import docker_status
 from .routes import compose, containers, images, networks, stacks, volumes
 
 _PING_INTERVAL = 30.0
+_SWEEP_INTERVAL = 3600.0
 
 
 async def _ping_loop():
@@ -26,19 +26,36 @@ async def _ping_loop():
             pass
 
 
+async def _sweep_loop():
+    """Periodically prune stale jobs so the UI badge and DB don't grow
+    unbounded."""
+    while True:
+        await asyncio.sleep(_SWEEP_INTERVAL)
+        try:
+            db.sweep_old_jobs()
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    db.init_db()
+    try:
+        db.sweep_old_jobs()
+    except Exception:
+        pass
     loop = asyncio.get_running_loop()
     events.set_loop(loop)
     snapshot_task = asyncio.create_task(events.snapshot_loop())
     ping_task = asyncio.create_task(_ping_loop())
+    sweep_task = asyncio.create_task(_sweep_loop())
     try:
         yield
     finally:
         snapshot_task.cancel()
         ping_task.cancel()
-        for t in (snapshot_task, ping_task):
+        sweep_task.cancel()
+        for t in (snapshot_task, ping_task, sweep_task):
             try:
                 await t
             except (asyncio.CancelledError, Exception):

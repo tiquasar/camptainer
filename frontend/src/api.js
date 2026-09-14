@@ -12,6 +12,7 @@ class ApiError extends Error {
 }
 
 async function withTimeout(promise, ms, label) {
+  if (ms == null || ms <= 0) return promise;
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new ApiError(`${label} timed out after ${ms / 1000}s`, 0)), ms);

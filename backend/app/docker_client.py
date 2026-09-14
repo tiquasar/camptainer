@@ -224,16 +224,33 @@ def _container_full(c) -> dict:
     """Like ``_container_summary`` but with volumes, labels, env details."""
     s = _container_summary(c)
     attrs = c.attrs or {}
+    host_config = attrs.get("HostConfig", {}) or {}
     s["labels"] = attrs.get("Config", {}).get("Labels") or {}
     s["volumes"] = [
         f"{m.get('Source')}:{m.get('Target')}:{m.get('Mode') or 'rw'}"
         for m in (attrs.get("Mounts") or [])
         if m.get("Source") and m.get("Target")
     ]
-    s["restart_policy"] = (attrs.get("HostConfig", {}) or {}).get("RestartPolicy", {}).get(
-        "Name"
-    )
+    s["restart_policy"] = host_config.get("RestartPolicy", {}).get("Name")
+    nano_cpus = host_config.get("NanoCpus") or 0
+    if nano_cpus:
+        s["cpu"] = round(int(nano_cpus) / 1_000_000_000, 4)
+    mem_bytes = host_config.get("Memory") or 0
+    if mem_bytes:
+        s["mem"] = _bytes_to_mem(int(mem_bytes))
     return s
+
+
+def _bytes_to_mem(n: int) -> str:
+    """Render a Docker memory limit (in bytes) as a string accepted by the
+    container-create model (``_MEM_RE``)."""
+    if n >= 1024 ** 3 and n % (1024 ** 3) == 0:
+        return f"{n // (1024 ** 3)}g"
+    if n >= 1024 ** 2 and n % (1024 ** 2) == 0:
+        return f"{n // (1024 ** 2)}m"
+    if n >= 1024 and n % 1024 == 0:
+        return f"{n // 1024}k"
+    return str(n)
 
 
 def create_container(
