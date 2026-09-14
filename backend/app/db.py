@@ -5,11 +5,14 @@ job id, status, progress, result, and error are stored here so a frontend
 that was polling right before the restart can still recover the outcome.
 """
 import json
+import logging
 import sqlite3
 import time
 from typing import List, Optional
 
 from . import config
+
+log = logging.getLogger("camptainer.db")
 
 
 _CURRENT_SCHEMA_VERSION = 3
@@ -300,10 +303,17 @@ def list_recent_jobs(limit: int = 20) -> List[dict]:
 
 
 def sweep_old_jobs() -> int:
+    """Delete jobs that haven't been updated in ``JOB_RETENTION_SECONDS``.
+
+    Applies to any status: a job that's been ``pending`` or ``running``
+    for 24 h is abandoned (the worker thread died or the backend
+    crashed) and the UI badge shouldn't keep showing it. Actively
+    running jobs are updated every progress tick, so they survive.
+    """
     cutoff = time.time() - JOB_RETENTION_SECONDS
     with _conn() as c:
         cur = c.execute(
-            "DELETE FROM jobs WHERE status IN ('done', 'failed') AND updated_at < ?",
+            "DELETE FROM jobs WHERE updated_at < ?",
             (cutoff,),
         )
         return cur.rowcount

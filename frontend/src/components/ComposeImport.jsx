@@ -34,24 +34,35 @@ export default function ComposeImport({ onClose, addToast, onImported }) {
     setResult(null);
     setErrorMsg(null);
     stopRef.current = false;
+    let jobId;
     try {
-      const { job_id } = await api.importCompose(yaml, name.trim() || undefined);
-      const r = await pollJob(job_id, stopRef, setProgress);
-      const errors = r.errors || [];
-      setResult(r);
-      if (errors.length) {
-        setErrorMsg(errors.join("; "));
-        addToast(`Imported with errors: ${errors.join("; ")}`, "err");
-      } else {
-        addToast(`Imported "${r.import_name || "stack"}"`, "ok");
-      }
-      onImported?.();
+      ({ job_id: jobId } = await api.importCompose(yaml, name.trim() || undefined));
     } catch (error) {
       setErrorMsg(error.message);
       addToast(error.message, "err");
-    } finally {
       setBusy(false);
+      return;
     }
+    pollJob(jobId, stopRef, {
+      onUpdate: setProgress,
+      onDone: (r) => {
+        const errors = r.errors || [];
+        setResult(r);
+        if (errors.length) {
+          setErrorMsg(errors.join("; "));
+          addToast(`Imported with errors: ${errors.join("; ")}`, "err");
+        } else {
+          addToast(`Imported "${r.import_name || "stack"}"`, "ok");
+        }
+        setBusy(false);
+        onImported?.();
+      },
+      onError: (err) => {
+        setErrorMsg(err.message);
+        addToast(err.message, "err");
+        setBusy(false);
+      },
+    });
   };
 
   const handleClose = () => {
@@ -159,28 +170,24 @@ export default function ComposeImport({ onClose, addToast, onImported }) {
   );
 }
 
-function pollJob(jobId, stopRef, onUpdate) {
-  return new Promise((resolve, reject) => {
-    const tick = async () => {
-      if (stopRef.current) {
-        // Caller walked away; stop polling but don't reject.
-        resolve({ errors: ["Dialog closed before import finished"] });
-        return;
+function pollJob(jobId, stopRef, { onUpdate, onDone, onError }) {
+  const tick = async () => {
+    if (stopRef.current) {
+      return;
+    }
+    try {
+      const status = await api.getImportStatus(jobId);
+      onUpdate?.(status.progress);
+      if (status.status === "done") {
+        onDone?.(status.result || {});
+      } else if (status.status === "failed") {
+        onError?.(new Error(status.error || "Import failed"));
+      } else {
+        setTimeout(tick, POLL_MS);
       }
-      try {
-        const status = await api.getImportStatus(jobId);
-        onUpdate?.(status.progress);
-        if (status.status === "done") {
-          resolve(status.result || {});
-        } else if (status.status === "failed") {
-          reject(new Error(status.error || "Import failed"));
-        } else {
-          setTimeout(tick, POLL_MS);
-        }
-      } catch (err) {
-        reject(err);
-      }
-    };
-    tick();
-  });
+    } catch (err) {
+      onError?.(err);
+    }
+  };
+  tick();
 }
