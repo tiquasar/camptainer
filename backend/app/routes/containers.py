@@ -102,7 +102,16 @@ def container_logs(
         except Exception as exc:
             yield f"# error: {exc}\n"
 
-    return StreamingResponse(gen(), media_type="text/plain")
+    return StreamingResponse(
+        gen(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-store",
+            # Tell nginx (and friends) not to buffer SSE — without this,
+            # the "live" feed feels laggy behind a reverse proxy.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/{container_id}/stats")

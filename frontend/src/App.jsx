@@ -94,12 +94,18 @@ export default function App() {
 
   const addToast = useCallback((msg, type = "ok") => {
     const id = `${Date.now()}-${Math.random()}`;
-    setToasts((items) => [...items, { id, msg, type }]);
-    setTimeout(() => setToasts((items) => items.filter((item) => item.id !== id)), 5000);
+    const timer = setTimeout(() => {
+      setToasts((items) => items.filter((item) => item.id !== id));
+    }, 5000);
+    setToasts((items) => [...items, { id, msg, type, _timer: timer }]);
   }, []);
 
   const dismissToast = useCallback((id) => {
-    setToasts((items) => items.filter((item) => item.id !== id));
+    setToasts((items) => {
+      const item = items.find((i) => i.id === id);
+      if (item?._timer) clearTimeout(item._timer);
+      return items.filter((item) => item.id !== id);
+    });
   }, []);
 
   const loadStacks = useCallback(async () => {
@@ -206,6 +212,10 @@ export default function App() {
   const positions = useRef(loadPositions());
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  // Track the last node-id set so we only call setNodes when the topology
+  // membership actually changes. Re-calling setNodes on every snapshot
+  // would interrupt any in-flight node drag.
+  const lastIdsRef = useRef("");
 
   const handleNodesChange = useCallback((changes) => {
     onNodesChange(changes);
@@ -220,32 +230,39 @@ export default function App() {
   }, [onNodesChange]);
 
   useEffect(() => {
-    const nextNodes = [];
-    visibleNetworks.forEach((network, index) => {
-      const id = `net:${network.name}`;
-      const position = positions.current[id] || { x: 96, y: 88 + index * 146 };
-      positions.current[id] = position;
-      nextNodes.push({
-        id,
-        type: "network",
-        position,
-        data: { label: network.name, driver: network.driver, containerCount: (network.containers || []).length },
+    const networkIds = visibleNetworks.map((n) => `net:${n.name}`);
+    const containerIds = visibleContainers.map((c) => `ct:${c.id}`);
+    const idsKey = [...networkIds, ...containerIds].join("|");
+    if (idsKey !== lastIdsRef.current) {
+      lastIdsRef.current = idsKey;
+      const nextNodes = [];
+      visibleNetworks.forEach((network, index) => {
+        const id = `net:${network.name}`;
+        const position = positions.current[id] || { x: 96, y: 88 + index * 146 };
+        positions.current[id] = position;
+        nextNodes.push({
+          id,
+          type: "network",
+          position,
+          data: { label: network.name, driver: network.driver, containerCount: (network.containers || []).length },
+        });
       });
-    });
-
-    visibleContainers.forEach((container, index) => {
-      const id = `ct:${container.id}`;
-      const position = positions.current[id] || { x: 510, y: 88 + index * 146 };
-      positions.current[id] = position;
-      nextNodes.push({
-        id,
-        type: "container",
-        position,
-        data: { label: container.name, image: container.image, status: container.status },
+      visibleContainers.forEach((container, index) => {
+        const id = `ct:${container.id}`;
+        const position = positions.current[id] || { x: 510, y: 88 + index * 146 };
+        positions.current[id] = position;
+        nextNodes.push({
+          id,
+          type: "container",
+          position,
+          data: { label: container.name, image: container.image, status: container.status },
+        });
       });
-    });
-    setNodes(nextNodes);
+      setNodes(nextNodes);
+    }
 
+    // Edges can update freely: there's no drag to interrupt, and the
+    // animated style reflects running state.
     const nextEdges = [];
     visibleContainers.forEach((container) => {
       (container.networks || []).forEach((network) => {
@@ -269,8 +286,22 @@ export default function App() {
 
   const onEdgesDelete = useCallback(async (deletedEdges) => {
     for (const edge of deletedEdges) {
-      const containerId = edge.source.startsWith("ct:") ? edge.source.slice(3) : edge.target.slice(3);
-      const network = edge.source.startsWith("net:") ? edge.source.slice(4) : edge.target.slice(4);
+      const containerNode = edge.source.startsWith("ct:")
+        ? edge.source
+        : edge.target.startsWith("ct:")
+        ? edge.target
+        : null;
+      const networkNode = edge.source.startsWith("net:")
+        ? edge.source
+        : edge.target.startsWith("net:")
+        ? edge.target
+        : null;
+      if (!containerNode || !networkNode) {
+        addToast("Cannot disconnect: unknown edge", "err");
+        continue;
+      }
+      const containerId = containerNode.slice(3);
+      const network = networkNode.slice(4);
       try {
         await api.disconnect(containerId, network);
         addToast(`Disconnected from ${network}`, "ok");
@@ -281,8 +312,22 @@ export default function App() {
   }, [addToast]);
 
   const onConnect = useCallback(async (params) => {
-    const containerId = params.source.startsWith("ct:") ? params.source.slice(3) : params.target.slice(3);
-    const network = params.source.startsWith("net:") ? params.source.slice(4) : params.target.slice(4);
+    const containerNode = params.source.startsWith("ct:")
+      ? params.source
+      : params.target.startsWith("ct:")
+      ? params.target
+      : null;
+    const networkNode = params.source.startsWith("net:")
+      ? params.source
+      : params.target.startsWith("net:")
+      ? params.target
+      : null;
+    if (!containerNode || !networkNode) {
+      addToast("Cannot connect: unknown source or target", "err");
+      return;
+    }
+    const containerId = containerNode.slice(3);
+    const network = networkNode.slice(4);
     // Optimistic add so the user gets instant feedback; the next snapshot
     // (≤ 3s, or immediate via broadcast_change) will reconcile.
     setEdges((items) => addEdge({ ...params, animated: true }, items));
