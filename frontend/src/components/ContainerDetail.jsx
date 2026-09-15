@@ -22,38 +22,35 @@ export default function ContainerDetail({ container, onClose, onShell, onUpdated
   const [copied, setCopied] = useState(false);
   const logRef = useRef(null);
 
-  // Live logs (SSE-style stream).
+  // Live logs (SSE-style stream). The AbortController cancels BOTH the
+  // initial replay fetch and the streaming fetch on unmount/tab-switch, so
+  // rapid changes don't leak overlapping loops.
   useEffect(() => {
     if (tab !== "logs") return;
-    let cancel = false;
-    let pump = null;
+    const ac = new AbortController();
     setLogLines([]);
     (async () => {
       try {
-        // Replay last 100 lines first.
-        const initial = await api.getLogs(container.id, 100);
-        if (cancel) return;
-        setLogLines(initial.split("\n").filter(Boolean).slice(-MAX_LOG_LINES));
+        const initial = await api.getLogs(container.id, 100, ac.signal);
+        if (ac.signal.aborted) return;
+        setLogLines(initial.split("\n").slice(-MAX_LOG_LINES));
         await streamLogs(
           container.id,
           (chunk) => {
+            if (ac.signal.aborted) return;
             setLogLines((prev) => {
-              const next = prev.concat(chunk.split("\n").filter(Boolean));
+              const next = prev.concat(chunk.split("\n"));
               return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next;
             });
           },
-          { tail: 0 },
+          { tail: 0, signal: ac.signal },
         );
       } catch (e) {
+        if (ac.signal.aborted) return;
         addToast(e.message, "err");
       }
     })();
-    return () => {
-      cancel = true;
-      // The streamLogs promise resolves when the server closes; we can't
-      // cancel the underlying fetch in the browser, so the next reconnect
-      // will replace the chunks. Acceptable for now.
-    };
+    return () => ac.abort();
   }, [tab, container.id, addToast]);
 
   // Auto-scroll logs to bottom on new lines (unless user has scrolled up).
@@ -152,8 +149,11 @@ export default function ContainerDetail({ container, onClose, onShell, onUpdated
   };
 
   const copyId = async () => {
+    // container.id is the 12-char truncation; id_full (from _container_full)
+    // is the full sha256 hex the user actually wants in their clipboard.
+    const id = container.id_full || container.id;
     try {
-      await navigator.clipboard.writeText(container.id);
+      await navigator.clipboard.writeText(id);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

@@ -224,8 +224,10 @@ def _container_full(c) -> dict:
     """Like ``_container_summary`` but with volumes, labels, env details."""
     s = _container_summary(c)
     attrs = c.attrs or {}
+    config = attrs.get("Config", {}) or {}
     host_config = attrs.get("HostConfig", {}) or {}
-    s["labels"] = attrs.get("Config", {}).get("Labels") or {}
+    s["id_full"] = c.id
+    s["labels"] = config.get("Labels") or {}
     s["volumes"] = [
         f"{m.get('Source')}:{m.get('Target')}:{m.get('Mode') or 'rw'}"
         for m in (attrs.get("Mounts") or [])
@@ -238,6 +240,31 @@ def _container_full(c) -> dict:
     mem_bytes = host_config.get("Memory") or 0
     if mem_bytes:
         s["mem"] = _bytes_to_mem(int(mem_bytes))
+    if config.get("User"):
+        s["user"] = config["User"]
+    if config.get("WorkingDir"):
+        s["working_dir"] = config["WorkingDir"]
+    extra_hosts = host_config.get("ExtraHosts") or []
+    if extra_hosts:
+        s["extra_hosts"] = list(extra_hosts)
+    dns_list = host_config.get("Dns") or []
+    if dns_list:
+        s["dns"] = list(dns_list)
+    cap_add = host_config.get("CapAdd") or []
+    cap_drop = host_config.get("CapDrop") or []
+    if cap_add:
+        s["cap_add"] = list(cap_add)
+    if cap_drop:
+        s["cap_drop"] = list(cap_drop)
+    hc = config.get("Healthcheck") or None
+    if hc and isinstance(hc, dict) and hc.get("Test"):
+        s["healthcheck"] = {
+            "test": list(hc["Test"]),
+            "interval": hc.get("Interval"),
+            "timeout": hc.get("Timeout"),
+            "retries": hc.get("Retries"),
+            "start_period": hc.get("StartPeriod"),
+        }
     return s
 
 
@@ -265,6 +292,13 @@ def create_container(
     cpu: Optional[float] = None,
     mem: Optional[str] = None,
     auto_pull: bool = False,
+    user: Optional[str] = None,
+    working_dir: Optional[str] = None,
+    extra_hosts: Optional[List[str]] = None,
+    dns: Optional[List[str]] = None,
+    cap_add: Optional[List[str]] = None,
+    cap_drop: Optional[List[str]] = None,
+    healthcheck: Optional[dict] = None,
 ):
     cli = get_client()
     networks = networks or []
@@ -291,6 +325,26 @@ def create_container(
             pass
     if mem:
         run_kwargs["mem_limit"] = mem
+    if user:
+        run_kwargs["user"] = user
+    if working_dir:
+        run_kwargs["working_dir"] = working_dir
+    if extra_hosts:
+        run_kwargs["extra_hosts"] = dict(
+            (h.split(":", 1)[0].strip(), h.split(":", 1)[1].strip())
+            for h in extra_hosts
+            if ":" in h
+        )
+    if dns:
+        run_kwargs["dns"] = dns
+    if cap_add:
+        run_kwargs["cap_add"] = cap_add
+    if cap_drop:
+        run_kwargs["cap_drop"] = cap_drop
+    if healthcheck and isinstance(healthcheck, dict) and healthcheck.get("test"):
+        run_kwargs["healthcheck"] = {
+            k: v for k, v in healthcheck.items() if v is not None
+        }
 
     if auto_pull:
         _ensure_image(cli, image, auto_pull=True)
@@ -394,13 +448,19 @@ def stream_logs(container_id: str, follow: bool = True, tail: int = 100):
     # ``stream=True`` + ``follow=True`` blocks; we wrap in a thread so the
     # event loop stays responsive. ``tail`` gives a replay buffer on connect.
     out = c.logs(stream=True, follow=follow, tail=tail, stdout=True, stderr=True)
+    # Buffer partial lines across chunks: a line that TCP delivered mid-write
+    # would otherwise be torn in two and rendered as two short lines.
+    buf = ""
     for chunk in out:
         if isinstance(chunk, bytes):
             chunk = chunk.decode("utf-8", errors="replace")
-        # docker-py yields one log *line* at a time already.
-        for line in chunk.splitlines() or [chunk]:
-            if line:
-                yield line + "\n"
+        buf += chunk
+        parts = buf.split("\n")
+        buf = parts.pop()  # the remainder (possibly empty) belongs to the next chunk
+        for line in parts:
+            yield line + "\n"
+    if buf:
+        yield buf
 
 
 def get_stats(container_id: str) -> dict:
@@ -446,8 +506,15 @@ def recreate_container(container_id: str, spec) -> dict:
         networks=spec.networks,
         command=spec.command,
         restart_policy=spec.restart_policy,
-        cpu=spec.cpu,
-        mem=spec.mem,
+        cpu=getattr(spec, "cpu", None),
+        mem=getattr(spec, "mem", None),
+        user=getattr(spec, "user", None),
+        working_dir=getattr(spec, "working_dir", None),
+        extra_hosts=getattr(spec, "extra_hosts", None),
+        dns=getattr(spec, "dns", None),
+        cap_add=getattr(spec, "cap_add", None),
+        cap_drop=getattr(spec, "cap_drop", None),
+        healthcheck=getattr(spec, "healthcheck", None),
         auto_pull=getattr(spec, "auto_pull", False),
     )
 
@@ -508,8 +575,10 @@ def build_compose() -> str:
     services = {}
     for c in containers:
         attrs = c.attrs or {}
+        cfg = attrs.get("Config", {}) or {}
+        host = attrs.get("HostConfig", {}) or {}
         name = (c.name or "container").lstrip("/")
-        svc = {"image": attrs.get("Config", {}).get("Image", "")}
+        svc = {"image": cfg.get("Image", "")}
 
         ports_map = (attrs.get("NetworkSettings", {}) or {}).get("Ports", {}) or {}
         port_list = []
@@ -523,9 +592,18 @@ def build_compose() -> str:
         if port_list:
             svc["ports"] = port_list
 
-        env = attrs.get("Config", {}).get("Env", []) or []
+        env = cfg.get("Env", []) or []
         if env:
             svc["environment"] = list(env)
+
+        mounts = attrs.get("Mounts") or []
+        vol_list = [
+            f"{m.get('Source')}:{m.get('Target')}:{m.get('Mode') or 'rw'}"
+            for m in mounts
+            if m.get("Source") and m.get("Target")
+        ]
+        if vol_list:
+            svc["volumes"] = vol_list
 
         cnets = list(
             (attrs.get("NetworkSettings", {}).get("Networks", {}) or {}).keys()
@@ -533,13 +611,50 @@ def build_compose() -> str:
         if cnets:
             svc["networks"] = cnets
 
-        cmd = attrs.get("Config", {}).get("Cmd")
+        cmd = cfg.get("Cmd")
         if cmd:
             svc["command"] = " ".join(shlex.quote(x) for x in cmd)
 
-        restart = (attrs.get("HostConfig", {}) or {}).get("RestartPolicy", {}).get("Name")
+        restart = host.get("RestartPolicy", {}).get("Name")
         if restart and restart != "no":
             svc["restart"] = restart
+
+        nano = host.get("NanoCpus") or 0
+        if nano:
+            svc["cpus"] = round(int(nano) / 1_000_000_000, 4)
+        mem_bytes = host.get("Memory") or 0
+        if mem_bytes:
+            svc["mem_limit"] = _bytes_to_mem(int(mem_bytes))
+
+        user = cfg.get("User")
+        if user:
+            svc["user"] = user
+        wd = cfg.get("WorkingDir")
+        if wd:
+            svc["working_dir"] = wd
+
+        extra_hosts = host.get("ExtraHosts") or []
+        if extra_hosts:
+            svc["extra_hosts"] = list(extra_hosts)
+        dns_list = host.get("Dns") or []
+        if dns_list:
+            svc["dns"] = list(dns_list)
+        cap_add = host.get("CapAdd") or []
+        cap_drop = host.get("CapDrop") or []
+        if cap_add:
+            svc["cap_add"] = list(cap_add)
+        if cap_drop:
+            svc["cap_drop"] = list(cap_drop)
+
+        hc = cfg.get("Healthcheck") or None
+        if hc and isinstance(hc, dict) and hc.get("Test"):
+            svc["healthcheck"] = {
+                "test": list(hc["Test"]),
+                "interval": hc.get("Interval"),
+                "timeout": hc.get("Timeout"),
+                "retries": hc.get("Retries"),
+                "start_period": hc.get("StartPeriod"),
+            }
 
         services[name] = svc
 
@@ -571,18 +686,26 @@ def snapshot_definition() -> dict:
     containers = []
     for c in cli.containers.list(all=True, filters={"label": config.LABEL_FILTER}):
         attrs = c.attrs or {}
+        full = _container_full(c)
         containers.append(
             {
-                "name": (c.name or "").lstrip("/"),
-                "image": attrs.get("Config", {}).get("Image", ""),
-                "ports": _container_summary(c)["ports"],
-                "environment": attrs.get("Config", {}).get("Env", []) or [],
-                "networks": list(
-                    (attrs.get("NetworkSettings", {}).get("Networks", {}) or {}).keys()
-                ),
-                "volumes": _mounts_to_strings(attrs),
+                "name": full["name"],
+                "image": full["image"],
+                "ports": full["ports"],
+                "environment": full["environment"],
+                "networks": full["networks"],
+                "volumes": full["volumes"],
                 "command": " ".join(attrs.get("Config", {}).get("Cmd", []) or [])
                 or None,
+                "cpu": full.get("cpu"),
+                "mem": full.get("mem"),
+                "user": full.get("user"),
+                "working_dir": full.get("working_dir"),
+                "extra_hosts": full.get("extra_hosts"),
+                "dns": full.get("dns"),
+                "cap_add": full.get("cap_add"),
+                "cap_drop": full.get("cap_drop"),
+                "healthcheck": full.get("healthcheck"),
             }
         )
     nets = [n.name for n in cli.networks.list(filters={"label": config.LABEL_FILTER})]
@@ -658,6 +781,8 @@ def import_compose(text: str, on_progress=None, auto_pull: bool = False) -> dict
         env = sdef.get("environment", [])
         if isinstance(env, dict):
             env = [f"{k}={v}" for k, v in env.items()]
+        cpu = sdef.get("cpus") or sdef.get("cpu")
+        healthcheck = sdef.get("healthcheck")
         if on_progress:
             on_progress(f"Creating service \u201c{sname}\u201d", current, total)
         try:
@@ -669,7 +794,17 @@ def import_compose(text: str, on_progress=None, auto_pull: bool = False) -> dict
                     environment=env or [],
                     volumes=sdef.get("volumes", []) or [],
                     networks=sdef.get("networks", []) or [],
+                    command=sdef.get("command"),
                     restart_policy=sdef.get("restart"),
+                    cpu=cpu,
+                    mem=sdef.get("mem_limit"),
+                    user=sdef.get("user"),
+                    working_dir=sdef.get("working_dir"),
+                    extra_hosts=sdef.get("extra_hosts", []) or [],
+                    dns=sdef.get("dns", []) or [],
+                    cap_add=sdef.get("cap_add", []) or [],
+                    cap_drop=sdef.get("cap_drop", []) or [],
+                    healthcheck=healthcheck,
                     auto_pull=auto_pull,
                 )
             )
@@ -679,8 +814,14 @@ def import_compose(text: str, on_progress=None, auto_pull: bool = False) -> dict
     return created
 
 
-def pull_image(image: str):
-    """Pull an image, yielding human-readable progress lines (for SSE)."""
+def pull_image(image: str, stall_timeout: float = 60.0):
+    """Pull an image, yielding human-readable progress lines (for SSE).
+
+    ``stall_timeout`` is the maximum gap between chunks before the
+    generator aborts with a watchdog message. Prevents an SSE response
+    from hanging forever if the worker thread dies before putting its
+    ``None`` sentinel.
+    """
     import queue
     import threading
 
@@ -701,7 +842,11 @@ def pull_image(image: str):
 
     threading.Thread(target=worker, daemon=True).start()
     while True:
-        chunk = q.get()
+        try:
+            chunk = q.get(timeout=stall_timeout)
+        except queue.Empty:
+            yield f"# error: pull stalled for {int(stall_timeout)}s with no progress\n"
+            return
         if chunk is None:
             break
         yield chunk
@@ -730,16 +875,24 @@ def list_images() -> List[dict]:
 
 
 def _image_in_use(cli, tags: List[str]) -> bool:
+    """True if any camptainer-managed container references this image."""
     if not tags:
         return False
-    image_id = tags[0].split(":")[0] if ":" in tags[0] else tags[0]
+    tag_set = set(tags)
     try:
-        containers = cli.containers.list(all=True)
-        for c in containers:
-            if c.image.id == image_id or image_id in (c.image.tags or []):
-                return True
+        containers = cli.containers.list(
+            all=True, filters={"label": config.LABEL_FILTER}
+        )
     except Exception:
-        pass
+        return False
+    for c in containers:
+        c_tags = set(c.image.tags or [])
+        if c_tags & tag_set:
+            return True
+        # Match by short id (12 chars) for digests.
+        short = (c.image.id or "").split(":")[-1][:12]
+        if short and any(t.split(":")[0] == short for t in tags):
+            return True
     return False
 
 

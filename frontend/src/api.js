@@ -71,8 +71,8 @@ export const api = {
   disconnect: (id, network) => req("POST", `/containers/${id}/disconnect`, { network }),
 
   // Logs: snapshot (one-shot)
-  getLogs: (id, tail = 300) =>
-    fetch(`/containers/${id}/logs?tail=${tail}`).then(async (r) => {
+  getLogs: (id, tail = 300, signal) =>
+    fetch(`/containers/${id}/logs?tail=${tail}`, { signal }).then(async (r) => {
       if (!r.ok) throw new ApiError(`Logs request failed (${r.status})`, r.status);
       return r.text();
     }),
@@ -120,8 +120,8 @@ export const api = {
 
 // --- streaming ---
 
-function readStream(url, onChunk, { timeoutMs = 5 * 60_000 } = {}) {
-  return withTimeout(fetch(url), timeoutMs, `stream ${url}`).then((res) => {
+function readStream(url, onChunk, { timeoutMs = 5 * 60_000, signal } = {}) {
+  return withTimeout(fetch(url, { signal }), timeoutMs, `stream ${url}`).then((res) => {
     if (!res.ok) throw new ApiError(`Request failed (${res.status})`, res.status);
     if (!res.body) throw new ApiError("No response stream was returned", 0);
     const reader = res.body.getReader();
@@ -144,14 +144,14 @@ function readStream(url, onChunk, { timeoutMs = 5 * 60_000 } = {}) {
   });
 }
 
-export function streamPull(image, onChunk) {
-  return readStream(`/compose/pull?image=${encodeURIComponent(image)}`, onChunk);
+export function streamPull(image, onChunk, opts = {}) {
+  return readStream(`/compose/pull?image=${encodeURIComponent(image)}`, onChunk, opts);
 }
 
-export function streamLogs(id, onChunk, { tail = 100 } = {}) {
+export function streamLogs(id, onChunk, { tail = 100, signal } = {}) {
   return readStream(
     `/containers/${id}/logs?follow=true&tail=${tail}`,
     onChunk,
-    { timeoutMs: 0 }, // logs are long-lived
+    { timeoutMs: 0, signal }, // logs are long-lived
   );
 }

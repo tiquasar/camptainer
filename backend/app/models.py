@@ -1,7 +1,7 @@
 import re
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Docker requires container/network names to match this pattern.
 _NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
@@ -39,9 +39,58 @@ class ContainerCreate(BaseModel):
     )
     cpu: Optional[float] = Field(None, ge=0, le=1024)
     mem: Optional[str] = Field(None, pattern=_MEM_RE)
+    # Optional Docker run-config bits preserved across build_compose round-trip.
+    user: Optional[str] = Field(None, max_length=128)
+    working_dir: Optional[str] = Field(None, max_length=512)
+    extra_hosts: List[str] = []  # e.g. ["db:10.0.0.1"]
+    dns: List[str] = []  # e.g. ["1.1.1.1"]
+    cap_add: List[str] = []  # e.g. ["NET_ADMIN"]
+    cap_drop: List[str] = []  # e.g. ["MKNOD"]
+    healthcheck: Optional[dict] = None  # {"test": [...], "interval": 30s, ...}
     # If True and the image is not local, the backend will pull it before
     # creating the container. Defaults to False to preserve old behaviour.
     auto_pull: bool = False
+
+    @field_validator("ports")
+    @classmethod
+    def _ports_format(cls, v: List[str]) -> List[str]:
+        for p in v:
+            if not p or ":" not in p:
+                raise ValueError(
+                    f"Invalid port mapping: {p!r} (expected 'host:container[/proto]')"
+                )
+            host, _, container = p.partition(":")
+            if "/" in container:
+                container = container.split("/", 1)[0]
+            if not host.isdigit() or not container.isdigit():
+                raise ValueError(f"Invalid port mapping: {p!r} (ports must be numeric)")
+        return v
+
+    @field_validator("environment")
+    @classmethod
+    def _env_format(cls, v: List[str]) -> List[str]:
+        for e in v:
+            if "=" not in e:
+                raise ValueError(f"Invalid env entry: {e!r} (expected KEY=value)")
+        return v
+
+    @field_validator("volumes")
+    @classmethod
+    def _volumes_format(cls, v: List[str]) -> List[str]:
+        for vol in v:
+            if ":" not in vol:
+                raise ValueError(
+                    f"Invalid volume: {vol!r} (expected host:container[:mode])"
+                )
+        return v
+
+    @field_validator("extra_hosts")
+    @classmethod
+    def _hosts_format(cls, v: List[str]) -> List[str]:
+        for h in v:
+            if ":" not in h:
+                raise ValueError(f"Invalid extra_host: {h!r} (expected 'host:ip')")
+        return v
 
 
 class ComposeImport(BaseModel):

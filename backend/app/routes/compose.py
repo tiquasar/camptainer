@@ -150,5 +150,10 @@ def forget_import(import_id: int):
 def pull_image(image: str):
     """Pull an image, streaming progress (SSE)."""
     return StreamingResponse(
-        docker_client.pull_image(image), media_type="text/plain"
+        docker_client.pull_image(image),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
     )
