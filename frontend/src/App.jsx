@@ -141,7 +141,8 @@ export default function App() {
 
     const connect = () => {
       if (disposed) return;
-      ws = new WebSocket(`ws://${location.host}/events`);
+      const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${wsProtocol}//${location.host}/events`);
       ws.onopen = () => {
         setWsStatus("Live");
         backoff = 1000;

@@ -138,6 +138,13 @@ export default function ContainerDetail({ container, onClose, onShell, onUpdated
         restart_policy: container.restart_policy || null,
         cpu: container.cpu ?? null,
         mem: container.mem ?? null,
+        user: container.user ?? null,
+        working_dir: container.working_dir ?? null,
+        extra_hosts: container.extra_hosts ?? [],
+        dns: container.dns ?? [],
+        cap_add: container.cap_add ?? [],
+        cap_drop: container.cap_drop ?? [],
+        healthcheck: container.healthcheck ?? null,
         auto_pull: false,
       };
       await api.recreate(container.id, spec);

@@ -28,60 +28,69 @@ def _conn():
 
 
 def _migrate(c: sqlite3.Connection) -> None:
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER PRIMARY KEY
-        )
-        """
-    )
-    row = c.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
-    current = row["version"] if row else 0
-    if current < 1:
+    """Apply schema migrations atomically.
+
+    A single transaction guarantees a partial migration (e.g. a CREATE
+    TABLE that succeeds but is followed by a failure) cannot leave the
+    database in an inconsistent, half-migrated state. If any statement
+    fails, the whole migration rolls back and the schema_version row is
+    not advanced.
+    """
+    with c:
         c.execute(
             """
-            CREATE TABLE IF NOT EXISTS stacks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                definition TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
             )
             """
         )
-    if current < 2:
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS compose_imports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                network_names TEXT NOT NULL,
-                container_names TEXT NOT NULL,
-                torn_down INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+        row = c.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        current = row["version"] if row else 0
+        if current < 1:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stacks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    definition TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+                """
             )
-            """
-        )
-    if current < 3:
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                status TEXT NOT NULL,
-                progress TEXT NOT NULL,
-                result TEXT,
-                error TEXT,
-                payload TEXT,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
+        if current < 2:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS compose_imports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    network_names TEXT NOT NULL,
+                    container_names TEXT NOT NULL,
+                    torn_down INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+                """
             )
-            """
-        )
-    if current < _CURRENT_SCHEMA_VERSION:
-        c.execute(
-            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-            (_CURRENT_SCHEMA_VERSION,),
-        )
+        if current < 3:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress TEXT NOT NULL,
+                    result TEXT,
+                    error TEXT,
+                    payload TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+        if current < _CURRENT_SCHEMA_VERSION:
+            c.execute(
+                "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                (_CURRENT_SCHEMA_VERSION,),
+            )
 
 
 def init_db():
