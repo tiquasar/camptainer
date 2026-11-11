@@ -30,13 +30,19 @@ def _conn():
 def _migrate(c: sqlite3.Connection) -> None:
     """Apply schema migrations atomically.
 
-    A single transaction guarantees a partial migration (e.g. a CREATE
-    TABLE that succeeds but is followed by a failure) cannot leave the
-    database in an inconsistent, half-migrated state. If any statement
-    fails, the whole migration rolls back and the schema_version row is
-    not advanced.
+    A single explicit transaction guarantees a partial migration (e.g. a
+    CREATE TABLE that succeeds but is followed by a failure) cannot leave
+    the database in an inconsistent, half-migrated state. If any
+    statement fails, the whole transaction rolls back and the
+    schema_version row is not advanced.
+
+    The transaction is begun explicitly because Python's ``sqlite3``
+    connection context manager only commits or rolls back an *active*
+    transaction, and DDL statements such as ``CREATE TABLE`` do not start
+    one on their own — they would otherwise autocommit individually.
     """
-    with c:
+    c.execute("BEGIN")
+    try:
         c.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_version (
@@ -91,6 +97,10 @@ def _migrate(c: sqlite3.Connection) -> None:
                 "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                 (_CURRENT_SCHEMA_VERSION,),
             )
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    c.execute("COMMIT")
 
 
 def init_db():
