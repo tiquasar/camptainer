@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import Icon from "./Icon.jsx";
 
-const DEFAULT_CMD = ["/bin/sh", "-c", "sh"];
+const DEFAULT_CMD = ["/bin/sh"];
 
 export default function ShellPanel({ container, onClose, addToast }) {
   const wsRef = useRef(null);
